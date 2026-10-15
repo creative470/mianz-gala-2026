@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mianz Gala Night 2026 - Admin Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!-- QR Scanner -->
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <!-- Firebase SDK -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+    import { getFirestore, collection, query, orderBy, onSnapshot, doc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+    // ⚠️ Firebase Config - Mianz Gala Night 2026
+    const firebaseConfig = {
+      apiKey: "AIzaSyB2TW5GM5TFciZfHDors8_qtYMdsSzrwdg",
+      authDomain: "mianz-gala-2026.firebaseapp.com",
+      projectId: "mianz-gala-2026",
+      storageBucket: "mianz-gala-2026.firebasestorage.app",
+      messagingSenderId: "827871828913",
+      appId: "1:827871828913:web:beeb2630b024d793fb3b90"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    let scanner = null;
+    let isScanning = false;
+
+    /* ============ Auth ============ */
+    onAuthStateChanged(auth, (user) => {
+      if (!user) {
+        document.getElementById('loginScreen').style.display = 'block';
+        document.getElementById('dashboard').style.display = 'none';
+      } else {
+        document.getElementById('loginScreen').style.display = 'none';
+        document.getElementById('dashboard').style.display = 'block';
+        loadAttendees();
+      }
+    });
+
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const email = document.getElementById('adminEmail').value;
+      const password = document.getElementById('adminPassword').value;
+      try {
+        await signInWithEmailAndPassword(auth, email, password);
+        document.getElementById('loginError').textContent = '';
+      } catch (err) {
+        document.getElementById('loginError').textContent = 'Invalid email or password';
+      }
+    });
+
+    document.getElementById('btnLogout').addEventListener('click', () => signOut(auth));
+
+    /* ============ Load Attendees (Real-time) ============ */
+    let attendees = [];
+    let unsubscribe = null;
+
+    function loadAttendees() {
+      const q = query(collection(db, 'attendees'), orderBy('registeredAt', 'desc'));
+      unsubscribe = onSnapshot(q, (snap) => {
+        attendees = snap.docs.map(doc => ({ docId: doc.id, ...doc.data() }));
+        renderStats();
+        renderLists();
+      });
+    }
+
+    function renderStats() {
+      const total = attendees.length;
+      const registered = attendees.filter(a => a.status === 'registered').length;
+      const attending = attendees.filter(a => a.status === 'attending').length;
+      document.getElementById('statTotal').textContent = total;
+      document.getElementById('statRegistered').textContent = registered;
+      document.getElementById('statAttending').textContent = attending;
+    }
+
+    function renderLists() {
+      const search = document.getElementById('searchList').value.toLowerCase();
+      const pending = attendees.filter(a => a.status === 'registered' && matchesSearch(a, search));
+      const attending = attendees.filter(a => a.status === 'attending' && matchesSearch(a, search));
+
+      document.getElementById('countPending').textContent = pending.length;
+      document.getElementById('countAttending').textContent = attending.length;
+
+      const tbodyPending = document.querySelector('#tablePending tbody');
+      const tbodyAttending = document.querySelector('#tableAttending tbody');
+      tbodyPending.innerHTML = '';
+      tbodyAttending.innerHTML = '';
+
+      pending.forEach(a => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><strong>${escapeHtml(a.name)}</strong></td>
+          <td>${escapeHtml(a.mobile)}</td>
+          <td>${escapeHtml(a.email)}</td>
+          <td><button class="btn-checkin" onclick="checkIn('${a.id}')">Check In</button></td>
+        `;
+        tbodyPending.appendChild(tr);
+      });
+
+      attending.forEach(a => {
+        const tr = document.createElement('tr');
+        const time = a.checkedInAt ? new Date(a.checkedInAt.seconds * 1000).toLocaleString() : '-';
+        tr.innerHTML = `
+          <td><strong>${escapeHtml(a.name)}</strong></td>
+          <td>${escapeHtml(a.mobile)}</td>
+          <td>${escapeHtml(a.email)}</td>
+          <td><span class="badge attending">Attending</span><br><small style="color:var(--muted)">${time}</small></td>
+        `;
+        tbodyAttending.appendChild(tr);
+      });
+
+      document.getElementById('emptyPending').style.display = pending.length ? 'none' : 'block';
+      document.getElementById('emptyAttending').style.display = attending.length ? 'none' : 'block';
+    }
+
+    function matchesSearch(a, s) {
+      if (!s) return true;
+      return (a.name + ' ' + a.mobile + ' ' + a.email).toLowerCase().includes(s);
+    }
+
+    /* ============ Check In ============ */
+    async function checkIn(docId) {
+      try {
+        await updateDoc(doc(db, 'attendees', docId), {
+          status: 'attending',
+          checkedInAt: new Date()
+        });
+        showToast('Attendee checked in!', 'success');
+      } catch (err) {
+        showToast('Check-in failed', 'error');
+      }
+    }
+
+    async function scanCheckIn(qrId) {
+      // qrId is the custom 'id' field (e.g. mz_12345_678)
+      const a = attendees.find(a => a.id === qrId);
+      if (!a) { showToast('Attendee not found in records', 'error'); return; }
+      if (a.status === 'attending') { showToast(a.name + ' already checked in.', 'warning'); return; }
+      try {
+        await updateDoc(doc(db, 'attendees', a.docId), {
+          status: 'attending',
+          checkedInAt: new Date()
+        });
+        showToast(a.name + ' checked in!', 'success');
+      } catch (err) {
+        showToast('Check-in failed', 'error');
+      }
+    }
+
+    /* ============ QR Scanner ============ */
+    async function startScanner() {
+      if (isScanning) return;
+      try {
+        scanner = new Html5Qrcode('reader');
+        isScanning = true;
+        document.getElementById('btnStartScan').style.display = 'none';
+        document.getElementById('btnStopScan').style.display = 'inline-flex';
+        document.getElementById('scanStatus').textContent = 'Scanning...';
+
+        await scanner.start(
+          { facingMode: 'environment' },
+          { fps: 10, qrbox: { width: 250, height: 250 } },
+          onScanSuccess,
+          onScanFailure
+        );
+      } catch (err) {
+        showToast('Camera error: ' + err.message, 'error');
+        isScanning = false;
+        document.getElementById('btnStartScan').style.display = 'inline-flex';
+        document.getElementById('btnStopScan').style.display = 'none';
+      }
+    }
+
+    function stopScanner() {
+      if (!scanner || !isScanning) return;
+      scanner.stop().then(() => {
+        isScanning = false;
+        document.getElementById('btnStartScan').style.display = 'inline-flex';
+        document.getElementById('btnStopScan').style.display = 'none';
+        document.getElementById('scanStatus').textContent = 'Scanner stopped.';
+      });
+    }
+
+    let lastScanTime = 0;
+    function onScanSuccess(decodedText) {
+      const now = Date.now();
+      if (now - lastScanTime < 2000) return;
+      lastScanTime = now;
+      try {
+        const payload = JSON.parse(decodedText);
+        scanCheckIn(payload.id);
+      } catch (e) {
+        showToast('Invalid QR code', 'error');
+      }
+    }
+
+    function onScanFailure(err) { /* ignore */ }
+
+    /* ============ Search ============ */
+    document.getElementById('searchList').addEventListener('input', renderLists);
+
+    /* ============ Utils ============ */
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function showToast(msg, type = 'success') {
+      const t = document.getElementById('toast');
+      document.getElementById('toastMsg').textContent = msg;
+      t.style.background = type === 'error' ? '#dc2626' : type === 'warning' ? '#d97706' : '#1e293b';
+      t.style.display = 'flex';
+      setTimeout(() => { t.style.display = 'none'; }, 3000);
+    }
+  </script>
+  <style>
+    :root {
+      --primary: #8b0000;
+      --primary-dark: #660000;
+      --success: #059669;
+      --warning: #d97706;
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --text: #1e293b;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Poppins', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+
+    .app { max-width: 1200px; margin: 0 auto; padding: 1rem; min-height: 100vh; }
+
+    header {
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 0;
+      margin-bottom: 2rem;
+      box-shadow: var(--shadow);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .header-inner {
+      max-width: 1200px; margin: 0 auto; padding: 0 1rem;
+      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;
+    }
+
+    .logo { display: flex; align-items: center; gap: 0.5rem; font-size: 1.25rem; font-weight: 700; color: var(--primary); }
+    .logo-icon { width: 32px; height: 32px; background: var(--primary); color: #fff; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 700; }
+
+    nav { display: flex; gap: 0.5rem; }
+    .btn-nav {
+      padding: 0.6rem 1.2rem; border: 1px solid var(--border); background: #fff;
+      color: var(--text); border-radius: 8px; cursor: pointer; font-weight: 500; font-size: 0.95rem;
+    }
+    .btn-nav:hover { border-color: var(--primary); color: var(--primary); }
+    .btn-nav.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+    .view { display: none; }
+    .view.active { display: block; }
+
+    .stats-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem; margin-bottom: 2rem;
+    }
+    .stat-card {
+      background: var(--card); padding: 1.5rem; border-radius: 12px;
+      box-shadow: var(--shadow); border: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .stat-info h3 { font-size: 2rem; font-weight: 700; color: var(--text); }
+    .stat-info p { color: var(--muted); font-size: 0.9rem; }
+    .stat-icon { width: 56px; height: 56px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.5rem; }
+    .stat-total .stat-icon { background: #dbeafe; color: var(--primary); }
+    .stat-registered .stat-icon { background: #d1fae5; color: #059669; }
+    .stat-attending .stat-icon { background: #dcfce7; color: #15803d; }
+
+    .card {
+      background: var(--card); border-radius: 12px; box-shadow: var(--shadow);
+      border: 1px solid var(--border); padding: 1.5rem; margin-bottom: 1.5rem;
+    }
+
+    .section-title { font-size: 1.25rem; font-weight: 700; margin-bottom: 1rem; color: var(--text); }
+
+    .tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--border); margin-bottom: 1.5rem; }
+    .tab {
+      padding: 0.75rem 1.25rem; background: transparent; border: none; border-bottom: 2px solid transparent;
+      cursor: pointer; font-weight: 500; color: var(--muted); font-size: 0.95rem;
+    }
+    .tab.active { color: var(--primary); border-bottom-color: var(--primary); background: #f8fafc; }
+
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 0.85rem 1rem; text-align: left; border-bottom: 1px solid var(--border); }
+    th { background: #f8fafc; font-weight: 600; color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    tr:hover { background: #f1f5f9; }
+
+    .badge {
+      display: inline-flex; align-items: center; padding: 0.25rem 0.6rem;
+      border-radius: 999px; font-size: 0.75rem; font-weight: 600;
+    }
+    .badge.attending { background: #dcfce7; color: #166534; }
+
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+      padding: 0.6rem 1rem; border: none; border-radius: 8px; font-size: 0.9rem;
+      font-weight: 600; font-family: inherit; cursor: pointer; transition: all 0.2s;
+    }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-primary:hover { background: var(--primary-dark); }
+    .btn-checkin { background: var(--success); color: #fff; padding: 0.4rem 0.8rem; font-size: 0.85rem; }
+    .btn-checkin:hover { background: #047857; }
+    .btn-danger { background: #dc2626; color: #fff; }
+    .btn-danger:hover { background: #b91c1c; }
+    .btn-outline { background: #fff; color: var(--primary); border: 1px solid var(--primary); }
+    .btn-outline:hover { background: var(--primary); color: #fff; }
+
+    .scanner-wrap { text-align: center; max-width: 640px; margin: 0 auto; }
+    #reader { width: 100%; max-width: 640px; margin: 0 auto; background: #000; border-radius: 12px; box-shadow: var(--shadow); }
+    .scan-status { margin-top: 1rem; font-size: 0.95rem; color: var(--muted); min-height: 1.2rem; }
+
+    .empty-state { text-align: center; padding: 3rem 1rem; color: var(--muted); }
+    .empty-state svg { width: 64px; height: 64px; margin-bottom: 1rem; opacity: 0.5; }
+
+    #toast {
+      position: fixed; bottom: 1.5rem; right: 1.5rem;
+      background: var(--text); color: #fff; padding: 1rem 1.5rem;
+      border-radius: 8px; box-shadow: var(--shadow);
+      display: none; align-items: center; gap: 0.75rem; z-index: 1000;
+      animation: slideIn 0.3s ease;
+    }
+    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+    /* Login screen */
+    #loginScreen {
+      position: fixed; inset: 0; background: #fff; z-index: 1000;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .login-box {
+      background: var(--card); padding: 2.5rem; border-radius: 16px;
+      box-shadow: var(--shadow); border: 1px solid var(--border);
+      max-width: 400px; width: 100%;
+    }
+    .login-box h2 { text-align: center; margin-bottom: 1.5rem; color: var(--primary); }
+    .login-box .form-group { margin-bottom: 1rem; }
+    .login-box label { display: block; font-weight: 600; margin-bottom: 0.4rem; color: var(--text); }
+    .login-box input { width: 100%; padding: 0.8rem; border: 1.5px solid var(--border); border-radius: 8px; font-size: 1rem; box-sizing: border-box; }
+    .login-box button { width: 100%; padding: 0.9rem; background: var(--primary); color: #fff; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; }
+    .login-box button:hover { background: var(--primary-dark); }
+    #loginError { color: #dc2626; font-size: 0.9rem; margin-top: 0.75rem; text-align: center; display: none; }
+
+    @media (max-width: 640px) {
+      .app { padding: 0.5rem; }
+      .header-inner { flex-direction: column; align-items: stretch; gap: 1rem; }
+      nav { justify-content: center; }
+      .btn-nav { flex: 1; text-align: center; }
+      .stat-card { flex-direction: column; gap: 1rem; text-align: center; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="app">
+  <header>
+    <div class="header-inner">
+      <div class="logo">
+        <div class="logo-icon">A</div>
+        <span>Admin Dashboard</span>
+      </div>
+      <nav>
+        <button class="btn-nav active" id="nav-dash">Dashboard</button>
+        <button class="btn-nav" id="nav-scan" onclick="showView('scan')">QR Scanner</button>
+      </nav>
+      <button class="btn btn-danger" onclick="document.getElementById('btnLogout').click()">Logout</button>
+    </div>
+  </header>
+
+  <!-- Login Screen -->
+  <div id="loginScreen">
+    <div class="login-box">
+      <h2>Admin Login</h2>
+      <form id="loginForm">
+        <div class="form-group">
+          <label>Email</label>
+          <input type="email" id="adminEmail" placeholder="admin@event.com" required>
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="adminPassword" placeholder="Enter password" required>
+        </div>
+        <button type="submit">Sign In</button>
+      </form>
+      <div id="loginError"></div>
+      <p style="text-align:center; margin-top:1rem; font-size:0.9rem; color:var(--muted);">
+        Create your admin account in Firebase Authentication first.
+      </p>
+    </div>
+  </div>
+
+  <!-- Dashboard View -->
+  <section id="view-dash" class="view active">
+    <div class="stats-grid">
+      <div class="stat-card stat-total">
+        <div class="stat-info"><h3 id="statTotal">0</h3><p>Total Registrations</p></div>
+        <div class="stat-icon">📋</div>
+      </div>
+      <div class="stat-card stat-registered">
+        <div class="stat-info"><h3 id="statRegistered">0</h3><p>Pending Check-in</p></div>
+        <div class="stat-icon">⏳</div>
+      </div>
+      <div class="stat-card stat-attending">
+        <div class="stat-info"><h3 id="statAttending">0</h3><p>Checked In</p></div>
+        <div class="stat-icon">✅</div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('lists')">Attendee Lists</button>
+      <button class="tab" onclick="switchTab('scan')">QR Scanner</button>
+    </div>
+
+    <div id="tab-lists">
+      <div style="display:flex; gap:1rem; align-items:center; margin-bottom:1rem; flex-wrap:wrap;">
+        <input type="text" id="searchList" class="form-control" placeholder="Search by name, email, or mobile..." style="max-width:400px;">
+      </div>
+
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1.5rem;">
+        <div class="card">
+          <div class="section-title" style="display:flex; justify-content:space-between; align-items:center;">
+            <span>Registered &amp; Pending</span>
+            <span class="badge" id="countPending">0</span>
+          </div>
+          <div class="table-wrap" style="max-height:400px; overflow-y:auto;">
+            <table id="tablePending">
+              <thead><tr><th>Name</th><th>Mobile</th><th>Email</th><th>Action</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="emptyPending" class="empty-state" style="display:none;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/></svg>
+            <div>No pending registrations</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="section-title" style="display:flex; justify-content:space-between; align-items:center;">
+            <span>Attending (Checked In)</span>
+            <span class="badge" id="countAttending">0</span>
+          </div>
+          <div class="table-wrap" style="max-height:400px; overflow-y:auto;">
+            <table id="tableAttending">
+              <thead><tr><th>Name</th><th>Mobile</th><th>Email</th><th>Status</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="emptyAttending" class="empty-state" style="display:none;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+            <div>No attendees checked in yet</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-scan" style="display:none;">
+      <div class="card">
+        <div class="section-title">Scan Attendee QR Code</div>
+        <p style="color:var(--muted); font-size:0.9rem; margin-bottom:1rem;">
+          Point the camera at the attendee's QR code to mark them as attending.
+        </p>
+        <div class="scanner-wrap">
+          <div id="reader"></div>
+          <div class="scan-status" id="scanStatus">Ready to scan...</div>
+        </div>
+        <div style="margin-top:1rem; display:flex; gap:0.5rem; justify-content:center; flex-wrap:wrap;">
+          <button class="btn btn-outline" id="btnStartScan" onclick="startScanner()">Start Camera</button>
+          <button class="btn btn-outline" id="btnStopScan" onclick="stopScanner()" style="display:none;">Stop Camera</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div id="toast"><span id="toastMsg"></span></div>
+
+<script>
+function showView(viewId) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById('view-' + viewId).classList.add('active');
+}
+function switchTab(tabId) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('tab-lists').style.display = tabId === 'lists' ? 'block' : 'none';
+  document.getElementById('tab-scan').style.display = tabId === 'scan' ? 'block' : 'none';
+}
+</script>
+
+</body>
+</html>
