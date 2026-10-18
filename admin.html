@@ -9,218 +9,6 @@
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
   <!-- QR Scanner -->
   <script src="https://unpkg.com/html5-qrcode"></script>
-  <!-- Firebase SDK -->
-  <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-    import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-    import { getFirestore, collection, query, orderBy, onSnapshot, doc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-
-    // ⚠️ Firebase Config - Mianz Gala Night 2026
-    const firebaseConfig = {
-      apiKey: "AIzaSyB2TW5GM5TFciZfHDors8_qtYMdsSzrwdg",
-      authDomain: "mianz-gala-2026.firebaseapp.com",
-      projectId: "mianz-gala-2026",
-      storageBucket: "mianz-gala-2026.firebasestorage.app",
-      messagingSenderId: "827871828913",
-      appId: "1:827871828913:web:beeb2630b024d793fb3b90"
-    };
-
-    const app = initializeApp(firebaseConfig);
-    const auth = getAuth(app);
-    const db = getFirestore(app);
-
-    let scanner = null;
-    let isScanning = false;
-
-    /* ============ Auth ============ */
-    onAuthStateChanged(auth, (user) => {
-      if (!user) {
-        document.getElementById('loginScreen').style.display = 'block';
-        document.getElementById('dashboard').style.display = 'none';
-      } else {
-        document.getElementById('loginScreen').style.display = 'none';
-        document.getElementById('dashboard').style.display = 'block';
-        loadAttendees();
-      }
-    });
-
-    document.getElementById('loginForm').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const email = document.getElementById('adminEmail').value;
-      const password = document.getElementById('adminPassword').value;
-      try {
-        await signInWithEmailAndPassword(auth, email, password);
-        document.getElementById('loginError').textContent = '';
-      } catch (err) {
-        document.getElementById('loginError').textContent = 'Invalid email or password';
-      }
-    });
-
-    document.getElementById('btnLogout').addEventListener('click', () => signOut(auth));
-
-    /* ============ Load Attendees (Real-time) ============ */
-    let attendees = [];
-    let unsubscribe = null;
-
-    function loadAttendees() {
-      const q = query(collection(db, 'attendees'), orderBy('registeredAt', 'desc'));
-      unsubscribe = onSnapshot(q, (snap) => {
-        attendees = snap.docs.map(doc => ({ docId: doc.id, ...doc.data() }));
-        renderStats();
-        renderLists();
-      });
-    }
-
-    function renderStats() {
-      const total = attendees.length;
-      const registered = attendees.filter(a => a.status === 'registered').length;
-      const attending = attendees.filter(a => a.status === 'attending').length;
-      document.getElementById('statTotal').textContent = total;
-      document.getElementById('statRegistered').textContent = registered;
-      document.getElementById('statAttending').textContent = attending;
-    }
-
-    function renderLists() {
-      const search = document.getElementById('searchList').value.toLowerCase();
-      const pending = attendees.filter(a => a.status === 'registered' && matchesSearch(a, search));
-      const attending = attendees.filter(a => a.status === 'attending' && matchesSearch(a, search));
-
-      document.getElementById('countPending').textContent = pending.length;
-      document.getElementById('countAttending').textContent = attending.length;
-
-      const tbodyPending = document.querySelector('#tablePending tbody');
-      const tbodyAttending = document.querySelector('#tableAttending tbody');
-      tbodyPending.innerHTML = '';
-      tbodyAttending.innerHTML = '';
-
-      pending.forEach(a => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td><strong>${escapeHtml(a.name)}</strong></td>
-          <td>${escapeHtml(a.mobile)}</td>
-          <td>${escapeHtml(a.email)}</td>
-          <td><button class="btn-checkin" onclick="checkIn('${a.id}')">Check In</button></td>
-        `;
-        tbodyPending.appendChild(tr);
-      });
-
-      attending.forEach(a => {
-        const tr = document.createElement('tr');
-        const time = a.checkedInAt ? new Date(a.checkedInAt.seconds * 1000).toLocaleString() : '-';
-        tr.innerHTML = `
-          <td><strong>${escapeHtml(a.name)}</strong></td>
-          <td>${escapeHtml(a.mobile)}</td>
-          <td>${escapeHtml(a.email)}</td>
-          <td><span class="badge attending">Attending</span><br><small style="color:var(--muted)">${time}</small></td>
-        `;
-        tbodyAttending.appendChild(tr);
-      });
-
-      document.getElementById('emptyPending').style.display = pending.length ? 'none' : 'block';
-      document.getElementById('emptyAttending').style.display = attending.length ? 'none' : 'block';
-    }
-
-    function matchesSearch(a, s) {
-      if (!s) return true;
-      return (a.name + ' ' + a.mobile + ' ' + a.email).toLowerCase().includes(s);
-    }
-
-    /* ============ Check In ============ */
-    async function checkIn(docId) {
-      try {
-        await updateDoc(doc(db, 'attendees', docId), {
-          status: 'attending',
-          checkedInAt: new Date()
-        });
-        showToast('Attendee checked in!', 'success');
-      } catch (err) {
-        showToast('Check-in failed', 'error');
-      }
-    }
-
-    async function scanCheckIn(qrId) {
-      // qrId is the custom 'id' field (e.g. mz_12345_678)
-      const a = attendees.find(a => a.id === qrId);
-      if (!a) { showToast('Attendee not found in records', 'error'); return; }
-      if (a.status === 'attending') { showToast(a.name + ' already checked in.', 'warning'); return; }
-      try {
-        await updateDoc(doc(db, 'attendees', a.docId), {
-          status: 'attending',
-          checkedInAt: new Date()
-        });
-        showToast(a.name + ' checked in!', 'success');
-      } catch (err) {
-        showToast('Check-in failed', 'error');
-      }
-    }
-
-    /* ============ QR Scanner ============ */
-    async function startScanner() {
-      if (isScanning) return;
-      try {
-        scanner = new Html5Qrcode('reader');
-        isScanning = true;
-        document.getElementById('btnStartScan').style.display = 'none';
-        document.getElementById('btnStopScan').style.display = 'inline-flex';
-        document.getElementById('scanStatus').textContent = 'Scanning...';
-
-        await scanner.start(
-          { facingMode: 'environment' },
-          { fps: 10, qrbox: { width: 250, height: 250 } },
-          onScanSuccess,
-          onScanFailure
-        );
-      } catch (err) {
-        showToast('Camera error: ' + err.message, 'error');
-        isScanning = false;
-        document.getElementById('btnStartScan').style.display = 'inline-flex';
-        document.getElementById('btnStopScan').style.display = 'none';
-      }
-    }
-
-    function stopScanner() {
-      if (!scanner || !isScanning) return;
-      scanner.stop().then(() => {
-        isScanning = false;
-        document.getElementById('btnStartScan').style.display = 'inline-flex';
-        document.getElementById('btnStopScan').style.display = 'none';
-        document.getElementById('scanStatus').textContent = 'Scanner stopped.';
-      });
-    }
-
-    let lastScanTime = 0;
-    function onScanSuccess(decodedText) {
-      const now = Date.now();
-      if (now - lastScanTime < 2000) return;
-      lastScanTime = now;
-      try {
-        const payload = JSON.parse(decodedText);
-        scanCheckIn(payload.id);
-      } catch (e) {
-        showToast('Invalid QR code', 'error');
-      }
-    }
-
-    function onScanFailure(err) { /* ignore */ }
-
-    /* ============ Search ============ */
-    document.getElementById('searchList').addEventListener('input', renderLists);
-
-    /* ============ Utils ============ */
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
-    }
-
-    function showToast(msg, type = 'success') {
-      const t = document.getElementById('toast');
-      document.getElementById('toastMsg').textContent = msg;
-      t.style.background = type === 'error' ? '#dc2626' : type === 'warning' ? '#d97706' : '#1e293b';
-      t.style.display = 'flex';
-      setTimeout(() => { t.style.display = 'none'; }, 3000);
-    }
-  </script>
   <style>
     :root {
       --primary: #8b0000;
@@ -387,7 +175,7 @@
         <button class="btn-nav active" id="nav-dash">Dashboard</button>
         <button class="btn-nav" id="nav-scan" onclick="showView('scan')">QR Scanner</button>
       </nav>
-      <button class="btn btn-danger" onclick="document.getElementById('btnLogout').click()">Logout</button>
+      <button class="btn btn-danger" id="btnLogout">Logout</button>
     </div>
   </header>
 
@@ -398,7 +186,7 @@
       <form id="loginForm">
         <div class="form-group">
           <label>Email</label>
-          <input type="email" id="adminEmail" placeholder="admin@event.com" required>
+          <input type="email" id="adminEmail" placeholder="creative@micollege.edu.mv" required>
         </div>
         <div class="form-group">
           <label>Password</label>
@@ -408,7 +196,7 @@
       </form>
       <div id="loginError"></div>
       <p style="text-align:center; margin-top:1rem; font-size:0.9rem; color:var(--muted);">
-        Create your admin account in Firebase Authentication first.
+        Sign in with your Firebase admin account.
       </p>
     </div>
   </div>
@@ -498,17 +286,228 @@
 
 <div id="toast"><span id="toastMsg"></span></div>
 
-<script>
-function showView(viewId) {
-  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-  document.getElementById('view-' + viewId).classList.add('active');
-}
-function switchTab(tabId) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  event.target.classList.add('active');
-  document.getElementById('tab-lists').style.display = tabId === 'lists' ? 'block' : 'none';
-  document.getElementById('tab-scan').style.display = tabId === 'scan' ? 'block' : 'none';
-}
+<!-- Firebase + App Scripts (load after DOM is ready) -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+  import { getFirestore, collection, query, orderBy, onSnapshot, doc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  // Firebase Config
+  const firebaseConfig = {
+    apiKey: "AIzaSyB2TW5GM5TFciZfHDors8_qtYMdsSzrwdg",
+    authDomain: "mianz-gala-2026.firebaseapp.com",
+    projectId: "mianz-gala-2026",
+    storageBucket: "mianz-gala-2026.firebasestorage.app",
+    messagingSenderId: "827871828913",
+    appId: "1:827871828913:web:beeb2630b024d793fb3b90"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+
+  let scanner = null;
+  let isScanning = false;
+  let attendees = [];
+  let unsubscribe = null;
+
+  /* ============ Auth ============ */
+  onAuthStateChanged(auth, (user) => {
+    if (!user) {
+      document.getElementById('loginScreen').style.display = 'flex';
+      document.getElementById('view-dash').style.display = 'none';
+    } else {
+      document.getElementById('loginScreen').style.display = 'none';
+      document.getElementById('view-dash').style.display = 'block';
+      loadAttendees();
+    }
+  });
+
+  document.getElementById('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = document.getElementById('adminEmail').value;
+    const password = document.getElementById('adminPassword').value;
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+      document.getElementById('loginError').textContent = '';
+    } catch (err) {
+      document.getElementById('loginError').textContent = 'Invalid email or password';
+    }
+  });
+
+  document.getElementById('btnLogout').addEventListener('click', () => signOut(auth));
+
+  /* ============ Load Attendees (Real-time) ============ */
+  function loadAttendees() {
+    const q = query(collection(db, 'attendees'), orderBy('registeredAt', 'desc'));
+    unsubscribe = onSnapshot(q, (snap) => {
+      attendees = snap.docs.map(doc => ({ docId: doc.id, ...doc.data() }));
+      renderStats();
+      renderLists();
+    });
+  }
+
+  function renderStats() {
+    const total = attendees.length;
+    const registered = attendees.filter(a => a.status === 'registered').length;
+    const attending = attendees.filter(a => a.status === 'attending').length;
+    document.getElementById('statTotal').textContent = total;
+    document.getElementById('statRegistered').textContent = registered;
+    document.getElementById('statAttending').textContent = attending;
+  }
+
+  function renderLists() {
+    const search = document.getElementById('searchList').value.toLowerCase();
+    const pending = attendees.filter(a => a.status === 'registered' && matchesSearch(a, search));
+    const attending = attendees.filter(a => a.status === 'attending' && matchesSearch(a, search));
+
+    document.getElementById('countPending').textContent = pending.length;
+    document.getElementById('countAttending').textContent = attending.length;
+
+    const tbodyPending = document.querySelector('#tablePending tbody');
+    const tbodyAttending = document.querySelector('#tableAttending tbody');
+    tbodyPending.innerHTML = '';
+    tbodyAttending.innerHTML = '';
+
+    pending.forEach(a => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><strong>${escapeHtml(a.name)}</strong></td>
+        <td>${escapeHtml(a.mobile)}</td>
+        <td>${escapeHtml(a.email)}</td>
+        <td><button class="btn-checkin" onclick="checkIn('${a.docId}')">Check In</button></td>
+      `;
+      tbodyPending.appendChild(tr);
+    });
+
+    attending.forEach(a => {
+      const tr = document.createElement('tr');
+      const time = a.checkedInAt ? new Date(a.checkedInAt.seconds * 1000).toLocaleString() : '-';
+      tr.innerHTML = `
+        <td><strong>${escapeHtml(a.name)}</strong></td>
+        <td>${escapeHtml(a.mobile)}</td>
+        <td>${escapeHtml(a.email)}</td>
+        <td><span class="badge attending">Attending</span><br><small style="color:var(--muted)">${time}</small></td>
+      `;
+      tbodyAttending.appendChild(tr);
+    });
+
+    document.getElementById('emptyPending').style.display = pending.length ? 'none' : 'block';
+    document.getElementById('emptyAttending').style.display = attending.length ? 'none' : 'block';
+  }
+
+  function matchesSearch(a, s) {
+    if (!s) return true;
+    return (a.name + ' ' + a.mobile + ' ' + a.email).toLowerCase().includes(s);
+  }
+
+  /* ============ Check In ============ */
+  async function checkIn(docId) {
+    try {
+      await updateDoc(doc(db, 'attendees', docId), {
+        status: 'attending',
+        checkedInAt: new Date()
+      });
+      showToast('Attendee checked in!', 'success');
+    } catch (err) {
+      showToast('Check-in failed', 'error');
+    }
+  }
+
+  async function scanCheckIn(qrId) {
+    const a = attendees.find(a => a.id === qrId);
+    if (!a) { showToast('Attendee not found in records', 'error'); return; }
+    if (a.status === 'attending') { showToast(a.name + ' already checked in.', 'warning'); return; }
+    try {
+      await updateDoc(doc(db, 'attendees', a.docId), {
+        status: 'attending',
+        checkedInAt: new Date()
+      });
+      showToast(a.name + ' checked in!', 'success');
+    } catch (err) {
+      showToast('Check-in failed', 'error');
+    }
+  }
+
+  /* ============ QR Scanner ============ */
+  async function startScanner() {
+    if (isScanning) return;
+    try {
+      scanner = new Html5Qrcode('reader');
+      isScanning = true;
+      document.getElementById('btnStartScan').style.display = 'none';
+      document.getElementById('btnStopScan').style.display = 'inline-flex';
+      document.getElementById('scanStatus').textContent = 'Scanning...';
+
+      await scanner.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        onScanSuccess,
+        onScanFailure
+      );
+    } catch (err) {
+      showToast('Camera error: ' + err.message, 'error');
+      isScanning = false;
+      document.getElementById('btnStartScan').style.display = 'inline-flex';
+      document.getElementById('btnStopScan').style.display = 'none';
+    }
+  }
+
+  function stopScanner() {
+    if (!scanner || !isScanning) return;
+    scanner.stop().then(() => {
+      isScanning = false;
+      document.getElementById('btnStartScan').style.display = 'inline-flex';
+      document.getElementById('btnStopScan').style.display = 'none';
+      document.getElementById('scanStatus').textContent = 'Scanner stopped.';
+    });
+  }
+
+  let lastScanTime = 0;
+  function onScanSuccess(decodedText) {
+    const now = Date.now();
+    if (now - lastScanTime < 2000) return;
+    lastScanTime = now;
+    try {
+      const payload = JSON.parse(decodedText);
+      scanCheckIn(payload.id);
+    } catch (e) {
+      showToast('Invalid QR code', 'error');
+    }
+  }
+
+  function onScanFailure(err) { /* ignore */ }
+
+  /* ============ Search ============ */
+  document.getElementById('searchList').addEventListener('input', renderLists);
+
+  /* ============ Utils ============ */
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  function showToast(msg, type = 'success') {
+    const t = document.getElementById('toast');
+    document.getElementById('toastMsg').textContent = msg;
+    t.style.background = type === 'error' ? '#dc2626' : type === 'warning' ? '#d97706' : '#1e293b';
+    t.style.display = 'flex';
+    setTimeout(() => { t.style.display = 'none'; }, 3000);
+  }
+
+  /* ============ View Switching ============ */
+  function showView(viewId) {
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    document.getElementById('view-' + viewId).classList.add('active');
+  }
+
+  function switchTab(tabId) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    event.target.classList.add('active');
+    document.getElementById('tab-lists').style.display = tabId === 'lists' ? 'block' : 'none';
+    document.getElementById('tab-scan').style.display = tabId === 'scan' ? 'block' : 'none';
+  }
 </script>
 
 </body>
